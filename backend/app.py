@@ -22,6 +22,7 @@ from auth import (
 from credentials import encrypt_credential, decrypt_credential
 from oauth import generate_state, verify_state, github_auth_url, github_get_user, google_auth_url, google_get_user
 from emailer import send_verification_email, send_reset_email
+from firebase_auth import verify_id_token as verify_firebase_token
 
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 
@@ -930,6 +931,96 @@ def auth_login():
     except Exception as e:
         logger.error(f"auth_login error: {e}")
         return jsonify({'error': 'Login failed.'}), 500
+
+
+def _unique_username(base: str) -> str:
+    """Derive a unique username from an email/name base."""
+    base = re.sub(r'[^a-z0-9_-]', '', (base or 'user').lower())[:24] or 'user'
+    if len(base) < 3:
+        base = (base + 'user')[:3]
+    candidate = base
+    suffix = 0
+    while execute_query("SELECT id FROM users WHERE username = %s", (candidate,), fetch=True):
+        suffix += 1
+        candidate = f"{base}{suffix}"
+    return candidate
+
+
+@app.route('/api/auth/firebase', methods=['POST'])
+def auth_firebase():
+    """
+    Exchange a verified Firebase ID token for a CloudProof session JWT.
+    Creates the user row on first sign-in. Used by both email/password and Google.
+    Body: { id_token, username?, name? }
+    """
+    try:
+        data = request.json or {}
+        id_token = data.get('id_token')
+        if not id_token:
+            return jsonify({'error': 'id_token is required.'}), 400
+
+        try:
+            decoded = verify_firebase_token(id_token)
+        except Exception as e:
+            logger.warning(f"Firebase token verification failed: {e}")
+            return jsonify({'error': 'Invalid or expired sign-in token. Please sign in again.'}), 401
+
+        uid            = decoded.get('uid')
+        email          = (decoded.get('email') or '').strip().lower()
+        email_verified = 1 if decoded.get('email_verified') else 0
+        name           = (data.get('name') or decoded.get('name') or '').strip()
+        if not email:
+            return jsonify({'error': 'This sign-in method did not provide an email address.'}), 400
+
+        # Find an existing account by firebase_uid first, then by email.
+        rows = execute_query(
+            "SELECT id, username, name, email, s3_bucket, firebase_uid "
+            "FROM users WHERE firebase_uid = %s OR email = %s",
+            (uid, email), fetch=True
+        )
+
+        if rows:
+            u = rows[0]
+            # Backfill firebase_uid / verification status for legacy or pending rows.
+            execute_query(
+                "UPDATE users SET firebase_uid = %s, email_verified = %s WHERE id = %s",
+                (uid, email_verified, u['id'])
+            )
+        else:
+            desired = (data.get('username') or '').strip().lower()
+            if desired and not re.match(r'^[a-z0-9_-]{3,30}$', desired):
+                return jsonify({'error': 'Username: 3–30 chars, lowercase letters/numbers/hyphens/underscores.'}), 400
+            if desired and execute_query("SELECT id FROM users WHERE username = %s", (desired,), fetch=True):
+                return jsonify({'error': 'Username already taken.'}), 409
+            username = desired or _unique_username(email.split('@')[0])
+            display  = name or username
+            execute_query(
+                "INSERT INTO users (username, name, email, firebase_uid, email_verified) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (username, display, email, uid, email_verified)
+            )
+            rows = execute_query(
+                "SELECT id, username, name, email, s3_bucket FROM users WHERE firebase_uid = %s",
+                (uid,), fetch=True
+            )
+            u = rows[0]
+            logger.info(f"New Firebase account: {username} ({email})")
+
+        token = generate_token(u['id'])
+        return jsonify({
+            'success': True,
+            'token': token,
+            'user': {
+                'id':         u['id'],
+                'username':   u.get('username'),
+                'name':       u.get('name'),
+                'email':      u['email'],
+                'has_bucket': bool(u.get('s3_bucket')),
+            },
+        }), 200
+    except Exception as e:
+        logger.error(f"auth_firebase error: {e}")
+        return jsonify({'error': 'Sign-in failed.'}), 500
 
 
 @app.route('/api/auth/me', methods=['GET'])

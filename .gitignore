@@ -52,6 +52,10 @@ docker-compose.override.yml
 .aws/
 *.pem
 
+# Firebase service-account key (NEVER commit)
+firebase-service-account*.json
+*serviceAccount*.json
+
 # Testing
 coverage/
 .pytest_cache/

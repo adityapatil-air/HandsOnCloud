@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     email                     TEXT UNIQUE NOT NULL,
     password_hash             TEXT,
     email_verified            INTEGER DEFAULT 0,
+    firebase_uid              TEXT UNIQUE,
     oauth_provider            TEXT,
     oauth_id                  TEXT,
     role_arn                  TEXT,
