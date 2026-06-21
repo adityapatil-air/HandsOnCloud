@@ -174,10 +174,6 @@ Resources:
       Environment:
         Variables:
           DB_ENGINE: postgres
-          DB_HOST: db.remnvnsgrskctlqcyiws.supabase.co
-          DB_PORT: "5432"
-          DB_NAME: postgres
-          DB_USER: postgres
           DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           FRONTEND_URL: !Sub https://${CloudFrontDistribution.DomainName}
@@ -201,10 +197,6 @@ Resources:
       Environment:
         Variables:
           DB_ENGINE: postgres
-          DB_HOST: db.remnvnsgrskctlqcyiws.supabase.co
-          DB_PORT: "5432"
-          DB_NAME: postgres
-          DB_USER: postgres
           DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           SYNC_JOBS_TABLE: cloudproof-sync-jobs
@@ -226,10 +218,6 @@ Resources:
       Environment:
         Variables:
           DB_ENGINE: postgres
-          DB_HOST: db.remnvnsgrskctlqcyiws.supabase.co
-          DB_PORT: "5432"
-          DB_NAME: postgres
-          DB_USER: postgres
           DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           AWS_REGION_NAME: ap-south-1
@@ -313,6 +301,34 @@ Resources:
       Name: /cloudproof/SECRET_KEY
       Type: String
       Value: !Ref SecretKey
+
+  DBHostParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/DB_HOST
+      Type: String
+      Value: db.remnvnsgrskctlqcyiws.supabase.co
+
+  DBPortParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/DB_PORT
+      Type: String
+      Value: "5432"
+
+  DBNameParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/DB_NAME
+      Type: String
+      Value: postgres
+
+  DBUserParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/DB_USER
+      Type: String
+      Value: postgres
 
   FrontendBucketParam:
     Type: AWS::SSM::Parameter
