@@ -11,6 +11,31 @@ Parameters:
     Type: String
     NoEcho: true
 
+  FirebaseApiKey:
+    Type: String
+    NoEcho: true
+
+  FirebaseAuthDomain:
+    Type: String
+
+  FirebaseProjectId:
+    Type: String
+
+  FirebaseStorageBucket:
+    Type: String
+
+  FirebaseMessagingSenderId:
+    Type: String
+
+  FirebaseAppId:
+    Type: String
+    NoEcho: true
+
+  FirebaseServiceAccountJson:
+    Type: String
+    NoEcho: true
+    Description: Firebase service account JSON as a single-line string
+
   GitHubOwner:
     Type: String
     Default: adityapatil-air
@@ -24,6 +49,14 @@ Parameters:
     Default: lambda-deploy
 
 Resources:
+
+# Firebase service account in Secrets Manager
+  FirebaseSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    Properties:
+      Name: cloudproof/firebase
+      SecretString: !Ref FirebaseServiceAccountJson
 
 # Supabase credentials in Secrets Manager
   SupabaseSecret:
@@ -185,6 +218,7 @@ Resources:
           AWS_REGION_NAME: ap-south-1
           SYNC_QUEUE_URL: !Ref SyncQueue
           SYNC_JOBS_TABLE: cloudproof-sync-jobs
+          FIREBASE_SERVICE_ACCOUNT_JSON: !Ref FirebaseServiceAccountJson
 
   SyncWorkerLambda:
     Type: AWS::Lambda::Function
@@ -210,6 +244,7 @@ Resources:
           SECRET_KEY: !Ref SecretKey
           SYNC_JOBS_TABLE: cloudproof-sync-jobs
           AWS_REGION_NAME: ap-south-1
+          FIREBASE_SERVICE_ACCOUNT_JSON: !Ref FirebaseServiceAccountJson
 
   SchedulerLambda:
     Type: AWS::Lambda::Function
@@ -234,6 +269,7 @@ Resources:
           DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           AWS_REGION_NAME: ap-south-1
+          FIREBASE_SERVICE_ACCOUNT_JSON: !Ref FirebaseServiceAccountJson
 
 # SQS trigger for sync worker
   SyncWorkerSQSTrigger:
@@ -349,6 +385,48 @@ Resources:
       Name: /cloudproof/AWS_REGION
       Type: String
       Value: ap-south-1
+
+  FirebaseApiKeyParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/FIREBASE_API_KEY
+      Type: String
+      Value: !Ref FirebaseApiKey
+
+  FirebaseAuthDomainParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/FIREBASE_AUTH_DOMAIN
+      Type: String
+      Value: !Ref FirebaseAuthDomain
+
+  FirebaseProjectIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/FIREBASE_PROJECT_ID
+      Type: String
+      Value: !Ref FirebaseProjectId
+
+  FirebaseStorageBucketParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/FIREBASE_STORAGE_BUCKET
+      Type: String
+      Value: !Ref FirebaseStorageBucket
+
+  FirebaseMessagingSenderIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/FIREBASE_MESSAGING_SENDER_ID
+      Type: String
+      Value: !Ref FirebaseMessagingSenderId
+
+  FirebaseAppIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/FIREBASE_APP_ID
+      Type: String
+      Value: !Ref FirebaseAppId
 
 # CI/CD
   PipelineRole:

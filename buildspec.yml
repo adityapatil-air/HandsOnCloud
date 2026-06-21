@@ -8,6 +8,12 @@ env:
     SCHEDULER_LAMBDA: /cloudproof/SCHEDULER_LAMBDA
     API_GATEWAY_ID:  /cloudproof/API_GATEWAY_ID
     AWS_REGION_NAME: /cloudproof/AWS_REGION
+    FIREBASE_API_KEY: /cloudproof/FIREBASE_API_KEY
+    FIREBASE_AUTH_DOMAIN: /cloudproof/FIREBASE_AUTH_DOMAIN
+    FIREBASE_PROJECT_ID: /cloudproof/FIREBASE_PROJECT_ID
+    FIREBASE_STORAGE_BUCKET: /cloudproof/FIREBASE_STORAGE_BUCKET
+    FIREBASE_MESSAGING_SENDER_ID: /cloudproof/FIREBASE_MESSAGING_SENDER_ID
+    FIREBASE_APP_ID: /cloudproof/FIREBASE_APP_ID
 
 phases:
   install:
@@ -23,7 +29,16 @@ phases:
   build:
     commands:
       # --- Inject real API Gateway URL into frontend build ---
-      - echo "REACT_APP_API_URL=https://${API_GATEWAY_ID}.execute-api.${AWS_REGION_NAME}.amazonaws.com/prod" > frontend/.env.production
+      - |
+        cat > frontend/.env.production << EOF
+        REACT_APP_API_URL=https://${API_GATEWAY_ID}.execute-api.${AWS_REGION_NAME}.amazonaws.com/prod
+        REACT_APP_FIREBASE_API_KEY=${FIREBASE_API_KEY}
+        REACT_APP_FIREBASE_AUTH_DOMAIN=${FIREBASE_AUTH_DOMAIN}
+        REACT_APP_FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}
+        REACT_APP_FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET}
+        REACT_APP_FIREBASE_MESSAGING_SENDER_ID=${FIREBASE_MESSAGING_SENDER_ID}
+        REACT_APP_FIREBASE_APP_ID=${FIREBASE_APP_ID}
+        EOF
       # --- Frontend build ---
       - npm run build --prefix frontend
 
