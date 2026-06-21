@@ -1391,7 +1391,7 @@ def auth_reset_password():
 
 # Mangum adapter — makes Flask work as an AWS Lambda handler
 from mangum import Mangum
-handler = Mangum(app, lifespan='off')
+handler = Mangum(app)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True, port=5000, use_reloader=False)
