@@ -15,6 +15,21 @@ BASE_DIR = os.path.dirname(__file__)
 SQLITE_DB_PATH = os.path.join(BASE_DIR, "cloudproof.db")
 SQLITE_INITIALIZED = False
 
+
+def _get_db_password():
+    """Return DB password from env var or Secrets Manager."""
+    pw = os.getenv("DB_PASSWORD")
+    if pw:
+        return pw
+    secret_name = os.getenv("DB_SECRET_NAME", "cloudproof/supabase")
+    try:
+        client = boto3.client("secretsmanager", region_name=os.getenv("AWS_REGION_NAME", "ap-south-1"))
+        secret = client.get_secret_value(SecretId=secret_name)
+        import json as _json
+        return _json.loads(secret["SecretString"])["DB_PASSWORD"]
+    except Exception as e:
+        raise Exception(f"Could not get DB password from Secrets Manager: {e}")
+
 # PostgreSQL connection pool (created lazily)
 _pg_pool = None
 _pg_pool_lock = threading.Lock()
@@ -133,9 +148,9 @@ def _get_postgres_connection(retries=3):
                     maxconn=5,
                     host=os.getenv("DB_HOST", "localhost"),
                     port=os.getenv("DB_PORT", "5432"),
-                    database=os.getenv("DB_NAME", "cloudproof"),
+                    database=os.getenv("DB_NAME", "postgres"),
                     user=os.getenv("DB_USER", "postgres"),
-                    password=os.getenv("DB_PASSWORD", "postgres"),
+                    password=_get_db_password(),
                     connect_timeout=10,
                 )
     for attempt in range(retries):

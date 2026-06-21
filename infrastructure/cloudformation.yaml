@@ -25,6 +25,13 @@ Parameters:
 
 Resources:
 
+# Supabase credentials in Secrets Manager
+  SupabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: cloudproof/supabase
+      SecretString: !Sub '{"DB_PASSWORD":"${DBPassword}"}'
+
 # DynamoDB - sync job status
   SyncJobsTable:
     Type: AWS::DynamoDB::Table
@@ -171,7 +178,7 @@ Resources:
           DB_PORT: "5432"
           DB_NAME: postgres
           DB_USER: postgres
-          DB_PASSWORD: !Ref DBPassword
+          DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           FRONTEND_URL: !Sub https://${CloudFrontDistribution.DomainName}
           AWS_REGION_NAME: ap-south-1
@@ -198,7 +205,7 @@ Resources:
           DB_PORT: "5432"
           DB_NAME: postgres
           DB_USER: postgres
-          DB_PASSWORD: !Ref DBPassword
+          DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           SYNC_JOBS_TABLE: cloudproof-sync-jobs
           AWS_REGION_NAME: ap-south-1
@@ -223,7 +230,7 @@ Resources:
           DB_PORT: "5432"
           DB_NAME: postgres
           DB_USER: postgres
-          DB_PASSWORD: !Ref DBPassword
+          DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           AWS_REGION_NAME: ap-south-1
 
