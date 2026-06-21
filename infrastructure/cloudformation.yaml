@@ -28,6 +28,7 @@ Resources:
 # Supabase credentials in Secrets Manager
   SupabaseSecret:
     Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
     Properties:
       Name: cloudproof/supabase
       SecretString: !Sub '{"DB_PASSWORD":"${DBPassword}"}'
