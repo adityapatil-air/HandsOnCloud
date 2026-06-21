@@ -2,6 +2,7 @@ import os
 import sqlite3
 import time
 import threading
+import boto3
 
 import psycopg2
 import psycopg2.pool
@@ -14,6 +15,53 @@ DB_ENGINE = os.getenv("DB_ENGINE", "sqlite").lower()
 BASE_DIR = os.path.dirname(__file__)
 SQLITE_DB_PATH = os.path.join(BASE_DIR, "cloudproof.db")
 SQLITE_INITIALIZED = False
+
+
+def _get_db_password():
+    """Return DB password from env var or Secrets Manager."""
+    pw = os.getenv("DB_PASSWORD")
+    if pw:
+        return pw
+    secret_name = os.getenv("DB_SECRET_NAME", "cloudproof/supabase")
+    try:
+        client = boto3.client("secretsmanager", region_name=os.getenv("AWS_REGION_NAME", "ap-south-1"))
+        secret = client.get_secret_value(SecretId=secret_name)
+        import json as _json
+        return _json.loads(secret["SecretString"])["DB_PASSWORD"]
+    except Exception as e:
+        raise Exception(f"Could not get DB password from Secrets Manager: {e}")
+
+
+def _get_ssm(name, default=''):
+    """Read SSM parameter, fall back to default."""
+    try:
+        client = boto3.client('ssm', region_name=os.getenv('AWS_REGION_NAME', 'ap-south-1'))
+        return client.get_parameter(Name=name)['Parameter']['Value']
+    except Exception:
+        return default
+
+
+# Read DB config from SSM at cold start — falls back to env vars for local dev
+_DB_HOST = os.getenv('DB_HOST') or _get_ssm('/cloudproof/DB_HOST', 'localhost')
+_DB_PORT = os.getenv('DB_PORT') or _get_ssm('/cloudproof/DB_PORT', '5432')
+_DB_NAME = os.getenv('DB_NAME') or _get_ssm('/cloudproof/DB_NAME', 'postgres')
+_DB_USER = os.getenv('DB_USER') or _get_ssm('/cloudproof/DB_USER', 'postgres')
+
+
+def _get_ssm(name, default=''):
+    """Read SSM parameter, fall back to default."""
+    try:
+        client = boto3.client('ssm', region_name=os.getenv('AWS_REGION_NAME', 'ap-south-1'))
+        return client.get_parameter(Name=name)['Parameter']['Value']
+    except Exception:
+        return default
+
+
+# Read DB config from SSM at cold start — falls back to env vars for local dev
+_DB_HOST = os.getenv('DB_HOST') or _get_ssm('/cloudproof/DB_HOST', 'localhost')
+_DB_PORT = os.getenv('DB_PORT') or _get_ssm('/cloudproof/DB_PORT', '5432')
+_DB_NAME = os.getenv('DB_NAME') or _get_ssm('/cloudproof/DB_NAME', 'postgres')
+_DB_USER = os.getenv('DB_USER') or _get_ssm('/cloudproof/DB_USER', 'postgres')
 
 # PostgreSQL connection pool (created lazily)
 _pg_pool = None
@@ -130,13 +178,13 @@ def _get_postgres_connection(retries=3):
         with _pg_pool_lock:
             if _pg_pool is None:
                 _pg_pool = psycopg2.pool.ThreadedConnectionPool(
-                    minconn=2,
-                    maxconn=20,
+                    minconn=1,
+                    maxconn=5,
                     host=os.getenv("DB_HOST", "localhost"),
                     port=os.getenv("DB_PORT", "5432"),
-                    database=os.getenv("DB_NAME", "cloudproof"),
+                    database=os.getenv("DB_NAME", "postgres"),
                     user=os.getenv("DB_USER", "postgres"),
-                    password=os.getenv("DB_PASSWORD", "postgres"),
+                    password=_get_db_password(),
                     connect_timeout=10,
                 )
     for attempt in range(retries):

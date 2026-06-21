@@ -1,18 +1,4 @@
 #!/bin/bash
-set -e
-
-# Stop existing app if running
-if systemctl is-active --quiet cloudproof; then
-    systemctl stop cloudproof
-fi
-
-# Install system dependencies if not present
-if ! command -v python3 &>/dev/null; then
-    apt-get update -y
-    apt-get install -y python3 python3-pip
-fi
-
-if ! command -v nginx &>/dev/null; then
-    apt-get update -y
-    apt-get install -y nginx
-fi
+# No-op: EC2 CodeDeploy lifecycle hook removed.
+# Deployment is now handled by CodeBuild (buildspec.yml) directly updating Lambda.
+echo "before_install: nothing to do (serverless deployment)"

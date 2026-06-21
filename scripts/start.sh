@@ -1,8 +1,3 @@
 #!/bin/bash
-set -e
-
-# Start Flask backend
-systemctl start cloudproof
-
-# Restart nginx to pick up any config changes
-systemctl restart nginx
+# No-op: no service to start — app runs on Lambda.
+echo "start: nothing to do (serverless deployment)"
