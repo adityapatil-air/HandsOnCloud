@@ -1,10 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudProof Full Infra + CI/CD + Single EC2 + Certbot
+Description: CloudProof Serverless Infra - Lambda + API Gateway + RDS + SQS + DynamoDB + S3/CloudFront
 
 Parameters:
-  KeyPair:
-    Type: AWS::EC2::KeyPair::KeyName
-
   DBPassword:
     Type: String
     NoEcho: true
@@ -14,32 +11,27 @@ Parameters:
     NoEcho: true
     Default: "cloudproof-secret-key-change-this"
 
+  GitHubOwner:
+    Type: String
+    Default: adityapatil-air
+
+  GitHubRepo:
+    Type: String
+    Default: cloudproof
+
+  GitHubBranch:
+    Type: String
+    Default: main
+
 Resources:
 
-# ---------------- VPC ----------------
+# ─────────────────────── VPC ───────────────────────────────────────────────
   MyVPC:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-
-# ---------------- SUBNETS ----------------
-  PublicSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref MyVPC
-      CidrBlock: 10.0.1.0/24
-      AvailabilityZone: ap-south-1a
-      MapPublicIpOnLaunch: true
-
-  PublicSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref MyVPC
-      CidrBlock: 10.0.2.0/24
-      AvailabilityZone: ap-south-1b
-      MapPublicIpOnLaunch: true
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -55,7 +47,16 @@ Resources:
       CidrBlock: 10.0.4.0/24
       AvailabilityZone: ap-south-1b
 
-# ---------------- INTERNET ----------------
+  # Lambda needs outbound internet access (to call STS/S3/CloudTrail)
+  # via a NAT Gateway in a public subnet
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: ap-south-1a
+      MapPublicIpOnLaunch: true
+
   InternetGateway:
     Type: AWS::EC2::InternetGateway
 
@@ -65,7 +66,17 @@ Resources:
       VpcId: !Ref MyVPC
       InternetGatewayId: !Ref InternetGateway
 
-# ---------------- ROUTE ----------------
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -79,50 +90,58 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  Assoc1:
+  PublicSubnet1Assoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
 
-  Assoc2:
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1Assoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet2
-      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
 
-# ---------------- SECURITY ----------------
-  EC2SG:
+  PrivateSubnet2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+# ─────────────────────── SECURITY GROUPS ──────────────────────────────────
+  LambdaSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP HTTPS SSH
+      GroupDescription: Lambda outbound only
       VpcId: !Ref MyVPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
+      SecurityGroupEgress:
+        - IpProtocol: -1
           CidrIp: 0.0.0.0/0
 
   RDSSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow Postgres from EC2
+      GroupDescription: Allow Postgres from Lambda
       VpcId: !Ref MyVPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
-          SourceSecurityGroupId: !Ref EC2SG
+          SourceSecurityGroupId: !Ref LambdaSG
 
-# ---------------- SECRETS ----------------
+# ─────────────────────── SECRETS / SSM ────────────────────────────────────
   DBSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -134,36 +153,14 @@ Resources:
           "dbname": "cloudproof"
         }
 
-# ---------------- IAM ----------------
-  EC2Role:
-    Type: AWS::IAM::Role
+  SecretKeyParam:
+    Type: AWS::SSM::Parameter
     Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Policies:
-        - PolicyName: CustomAccess
-          PolicyDocument:
-            Statement:
-              - Effect: Allow
-                Action:
-                  - secretsmanager:GetSecretValue
-                  - ssm:GetParameter
-                Resource: "*"
+      Name: /cloudproof/SECRET_KEY
+      Type: String
+      Value: !Ref SecretKey
 
-  EC2InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles:
-        - !Ref EC2Role
-
-# ---------------- RDS ----------------
+# ─────────────────────── RDS ──────────────────────────────────────────────
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -189,7 +186,6 @@ Resources:
         - !Ref RDSSG
       PubliclyAccessible: false
 
-# ---------------- SSM PARAM ----------------
   DBHostParam:
     Type: AWS::SSM::Parameter
     Properties:
@@ -197,67 +193,364 @@ Resources:
       Type: String
       Value: !GetAtt MyDB.Endpoint.Address
 
-  SecretKeyParam:
+# ─────────────────────── DYNAMODB (sync job status) ───────────────────────
+  SyncJobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: cloudproof-sync-jobs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+# ─────────────────────── SQS (async sync queue) ───────────────────────────
+  SyncDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: cloudproof-sync-dlq
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  SyncQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: cloudproof-sync-queue
+      VisibilityTimeout: 900           # 15 min — matches Lambda timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SyncDLQ.Arn
+        maxReceiveCount: 2
+
+# ─────────────────────── S3 (frontend + artifact) ─────────────────────────
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub cloudproof-frontend-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+# ─────────────────────── CLOUDFRONT ───────────────────────────────────────
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: cloudproof-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig: {}
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          AllowedMethods: [GET, HEAD]
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        Aliases:
+          - handsoncloud.in
+
+# ─────────────────────── IAM ROLE (Lambda) ────────────────────────────────
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: cloudproof-lambda-role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: CloudProofLambdaPolicy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - ssm:GetParameter
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt SyncQueue.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt SyncJobsTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:PutObject
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                  - cloudtrail:LookupEvents
+                Resource: "*"
+
+# ─────────────────────── LAMBDA FUNCTIONS ─────────────────────────────────
+  ApiLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: cloudproof-api
+      Runtime: python3.11
+      Handler: app.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              return {"statusCode": 200, "body": "placeholder - deploy via pipeline"}
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+        SecurityGroupIds:
+          - !Ref LambdaSG
+      Environment:
+        Variables:
+          DB_ENGINE: postgres
+          DB_HOST: !GetAtt MyDB.Endpoint.Address
+          DB_PORT: "5432"
+          DB_NAME: cloudproof
+          DB_USER: postgres
+          DB_PASSWORD: !Ref DBPassword
+          SECRET_KEY: !Ref SecretKey
+          FRONTEND_URL: https://handsoncloud.in
+          AWS_REGION_NAME: ap-south-1
+          SYNC_QUEUE_URL: !Ref SyncQueue
+          SYNC_JOBS_TABLE: cloudproof-sync-jobs
+
+  SyncWorkerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: cloudproof-sync-worker
+      Runtime: python3.11
+      Handler: sync_worker.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 900            # 15 min — large log files need time
+      MemorySize: 1024
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"statusCode": 200, "body": "placeholder - deploy via pipeline"}
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+        SecurityGroupIds:
+          - !Ref LambdaSG
+      Environment:
+        Variables:
+          DB_ENGINE: postgres
+          DB_HOST: !GetAtt MyDB.Endpoint.Address
+          DB_PORT: "5432"
+          DB_NAME: cloudproof
+          DB_USER: postgres
+          DB_PASSWORD: !Ref DBPassword
+          SECRET_KEY: !Ref SecretKey
+          SYNC_JOBS_TABLE: cloudproof-sync-jobs
+          AWS_REGION_NAME: ap-south-1
+
+  SchedulerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: cloudproof-scheduler
+      Runtime: python3.11
+      Handler: scheduler.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 900
+      MemorySize: 512
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"statusCode": 200, "body": "placeholder - deploy via pipeline"}
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+        SecurityGroupIds:
+          - !Ref LambdaSG
+      Environment:
+        Variables:
+          DB_ENGINE: postgres
+          DB_HOST: !GetAtt MyDB.Endpoint.Address
+          DB_PORT: "5432"
+          DB_NAME: cloudproof
+          DB_USER: postgres
+          DB_PASSWORD: !Ref DBPassword
+          SECRET_KEY: !Ref SecretKey
+          AWS_REGION_NAME: ap-south-1
+
+# ─────────────────────── SQS → SYNC WORKER TRIGGER ────────────────────────
+  SyncWorkerSQSTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt SyncQueue.Arn
+      FunctionName: !GetAtt SyncWorkerLambda.Arn
+      BatchSize: 1
+      Enabled: true
+
+# ─────────────────────── EVENTBRIDGE (daily scheduler) ────────────────────
+  SchedulerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: cloudproof-daily-sync
+      ScheduleExpression: cron(0 2 * * ? *)
+      State: ENABLED
+      Targets:
+        - Id: SchedulerLambdaTarget
+          Arn: !GetAtt SchedulerLambda.Arn
+
+  SchedulerLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt SchedulerLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SchedulerRule.Arn
+
+# ─────────────────────── API GATEWAY (HTTP API) ───────────────────────────
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: cloudproof-api
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - https://handsoncloud.in
+          - http://localhost:3000
+        AllowMethods: [GET, POST, PUT, DELETE, OPTIONS]
+        AllowHeaders: [Content-Type, Authorization]
+        AllowCredentials: true
+
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiLambda.Arn}/invocations
+      PayloadFormatVersion: "2.0"
+
+  ApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: $default
+      Target: !Sub integrations/${ApiIntegration}
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: prod
+      AutoDeploy: true
+
+  ApiLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ApiLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*
+
+# ─────────────────────── SSM PARAMS (for buildspec) ───────────────────────
+  FrontendBucketParam:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /cloudproof/SECRET_KEY
+      Name: /cloudproof/FRONTEND_BUCKET
       Type: String
-      Value: !Ref SecretKey
+      Value: !Ref FrontendBucket
 
-# ---------------- EC2 ----------------
-  MyEC2:
-    Type: AWS::EC2::Instance
-    DependsOn: MyDB
+  ApiLambdaParam:
+    Type: AWS::SSM::Parameter
     Properties:
-      InstanceType: t2.micro
-      KeyName: !Ref KeyPair
-      ImageId: ami-0f58b397bc5c1f2e8
-      SubnetId: !Ref PublicSubnet1
-      IamInstanceProfile: !Ref EC2InstanceProfile
-      SecurityGroupIds:
-        - !Ref EC2SG
-      Tags:
-        - Key: Name
-          Value: CloudProof
-      UserData:
-        Fn::Base64: |
-          #!/bin/bash
-          while lsof /var/lib/dpkg/lock-frontend > /dev/null 2>&1; do
-            sleep 5
-          done
-          systemctl disable unattended-upgrades
-          systemctl stop unattended-upgrades
-          apt-get update -y
-          apt-get install -y ruby-full wget unzip python3 python3-pip python3-dev \
-                             build-essential nginx git curl python3.12-venv \
-                             postgresql-client-16
+      Name: /cloudproof/API_LAMBDA
+      Type: String
+      Value: !Ref ApiLambda
 
-          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip awscliv2.zip
-          ./aws/install
+  SyncLambdaParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/SYNC_LAMBDA
+      Type: String
+      Value: !Ref SyncWorkerLambda
 
-          cd /home/ubuntu
-          wget https://aws-codedeploy-ap-south-1.s3.ap-south-1.amazonaws.com/latest/install
-          chmod +x ./install
-          ./install auto
-          systemctl start codedeploy-agent
-          systemctl enable codedeploy-agent
+  SchedulerLambdaParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/SCHEDULER_LAMBDA
+      Type: String
+      Value: !Ref SchedulerLambda
 
-          mkdir -p /var/www/html
-          chown -R ubuntu:ubuntu /var/www/html
-          chmod -R 755 /var/www/html
+  ApiGatewayIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/API_GATEWAY_ID
+      Type: String
+      Value: !Ref HttpApi
 
-          systemctl start nginx
-          systemctl enable nginx
+  AwsRegionParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/AWS_REGION
+      Type: String
+      Value: ap-south-1
 
-          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-          apt-get install -y nodejs
-
-# ---------------- S3 ----------------
-  ArtifactBucket:
-    Type: AWS::S3::Bucket
-
-# ---------------- CI/CD ROLE ----------------
+# ─────────────────────── CODEBUILD ROLE ───────────────────────────────────
   PipelineRole:
     Type: AWS::IAM::Role
     Properties:
@@ -268,12 +561,15 @@ Resources:
               Service:
                 - codepipeline.amazonaws.com
                 - codebuild.amazonaws.com
-                - codedeploy.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AdministratorAccess
 
-# ---------------- CODEBUILD ----------------
+# ─────────────────────── S3 ARTIFACT BUCKET ───────────────────────────────
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+
+# ─────────────────────── CODEBUILD ────────────────────────────────────────
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -288,25 +584,7 @@ Resources:
       Source:
         Type: CODEPIPELINE
 
-# ---------------- CODEDEPLOY ----------------
-  CodeDeployApp:
-    Type: AWS::CodeDeploy::Application
-
-  CodeDeployGroup:
-    Type: AWS::CodeDeploy::DeploymentGroup
-    Properties:
-      DeploymentGroupName: CloudProofDeployGroup
-      ApplicationName: !Ref CodeDeployApp
-      ServiceRoleArn: !GetAtt PipelineRole.Arn
-      DeploymentStyle:
-        DeploymentType: IN_PLACE
-        DeploymentOption: WITHOUT_TRAFFIC_CONTROL
-      Ec2TagFilters:
-        - Key: Name
-          Value: CloudProof
-          Type: KEY_AND_VALUE
-
-# ---------------- CODEPIPELINE ----------------
+# ─────────────────────── CODEPIPELINE ─────────────────────────────────────
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
@@ -326,14 +604,14 @@ Resources:
               OutputArtifacts:
                 - Name: SourceOutput
               Configuration:
-                Owner: adityapatil-air
-                Repo: cloudproof
-                Branch: main
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
                 OAuthToken: '{{resolve:ssm:/cloudproof/github-token}}'
 
         - Name: Build
           Actions:
-            - Name: BuildStep
+            - Name: BuildAndDeploy
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -346,34 +624,30 @@ Resources:
               Configuration:
                 ProjectName: !Ref CodeBuildProject
 
-        - Name: Deploy
-          Actions:
-            - Name: DeployStep
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CodeDeploy
-                Version: 1
-              InputArtifacts:
-                - Name: BuildOutput
-              Configuration:
-                ApplicationName: !Ref CodeDeployApp
-                DeploymentGroupName: !Ref CodeDeployGroup
-
-# ---------------- ROUTE53 ----------------
+# ─────────────────────── ROUTE53 ──────────────────────────────────────────
   DNSRecord:
     Type: AWS::Route53::RecordSet
     Properties:
       HostedZoneName: handsoncloud.in.
       Name: handsoncloud.in
       Type: A
-      TTL: 300
-      ResourceRecords:
-        - !GetAtt MyEC2.PublicIp
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2   # CloudFront hosted zone ID (fixed value)
+        EvaluateTargetHealth: false
 
 Outputs:
-  EC2IP:
-    Value: !GetAtt MyEC2.PublicIp
+  ApiEndpoint:
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod
+
+  CloudFrontURL:
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
 
   RDSEndpoint:
     Value: !GetAtt MyDB.Endpoint.Address
+
+  SyncQueueURL:
+    Value: !Ref SyncQueue
+
+  FrontendBucketName:
+    Value: !Ref FrontendBucket

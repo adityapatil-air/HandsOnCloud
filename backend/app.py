@@ -8,7 +8,7 @@ import re
 import uuid
 import random
 import secrets
-import threading
+import json as _json
 import boto3
 from werkzeug.security import generate_password_hash, check_password_hash
 from ingestion import process_local_cloudtrail_logs, process_s3_cloudtrail_logs, process_user_s3_logs, store_activities
@@ -25,9 +25,32 @@ from emailer import send_verification_email, send_reset_email
 
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 
-# In-memory store for async sync jobs: job_id → state dict
-sync_jobs = {}
-sync_jobs_lock = threading.Lock()
+SYNC_JOBS_TABLE = os.getenv('SYNC_JOBS_TABLE', 'cloudproof-sync-jobs')
+SYNC_QUEUE_URL  = os.getenv('SYNC_QUEUE_URL', '')
+
+_dynamodb = None
+
+def _get_dynamodb():
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource('dynamodb', region_name=os.getenv('AWS_REGION', 'ap-south-1'))
+    return _dynamodb
+
+def _get_job(job_id):
+    try:
+        table = _get_dynamodb().Table(SYNC_JOBS_TABLE)
+        resp  = table.get_item(Key={'job_id': job_id})
+        return resp.get('Item')
+    except Exception as e:
+        logger.error(f'DynamoDB get_job error: {e}')
+        return None
+
+def _put_job(job_id, item):
+    try:
+        table = _get_dynamodb().Table(SYNC_JOBS_TABLE)
+        table.put_item(Item={'job_id': job_id, **item})
+    except Exception as e:
+        logger.error(f'DynamoDB put_job error: {e}')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1084,38 +1107,10 @@ def select_bucket(user_id):
         return jsonify({'error': 'Failed to save bucket.'}), 500
 
 
-def _run_sync(job_id, user_id, bucket_name, s3_prefix, aws_region, ak, sk):
-    """Background worker: process S3 logs and update sync_jobs[job_id]."""
-    def on_progress(event, value):
-        with sync_jobs_lock:
-            if event == 'total':
-                sync_jobs[job_id]['files_total'] = value
-            elif event == 'batch_done':
-                sync_jobs[job_id]['files_done'] = sync_jobs[job_id].get('files_done', 0) + value
-
-    try:
-        count = process_user_s3_logs(
-            user_id=user_id,
-            bucket_name=bucket_name,
-            s3_prefix=s3_prefix,
-            aws_region=aws_region,
-            aws_access_key=ak or None,
-            aws_secret_key=sk or None,
-            progress_callback=on_progress,
-        )
-        with sync_jobs_lock:
-            sync_jobs[job_id].update({'status': 'done', 'records': count, 'finished_at': datetime.now()})
-        logger.info(f"Sync complete for user {user_id}: {count} records")
-    except Exception as e:
-        logger.error(f"Sync error for user {user_id}: {e}")
-        with sync_jobs_lock:
-            sync_jobs[job_id].update({'status': 'error', 'error': str(e), 'finished_at': datetime.now()})
-
-
 @app.route('/api/sync', methods=['POST'])
 @require_auth
 def sync_logs(user_id):
-    """Start an async log sync. Returns job_id immediately; poll /api/sync/status/<job_id>."""
+    """Enqueue an async log sync via SQS. Returns job_id immediately; poll /api/sync/status/<job_id>."""
     try:
         row = execute_query(
             "SELECT s3_bucket, s3_prefix, aws_region, aws_access_key_encrypted, aws_secret_key_encrypted FROM users WHERE id = %s",
@@ -1124,35 +1119,37 @@ def sync_logs(user_id):
         if not row or not row[0].get('s3_bucket'):
             return jsonify({'error': 'No S3 bucket configured. Complete setup first.'}), 400
 
-        r  = row[0]
-        ak = decrypt_credential(r.get('aws_access_key_encrypted') or '')
-        sk = decrypt_credential(r.get('aws_secret_key_encrypted') or '')
+        if not SYNC_QUEUE_URL:
+            return jsonify({'error': 'Sync queue not configured (SYNC_QUEUE_URL missing).'}), 500
 
-        # Purge stale completed jobs older than 5 minutes
-        cutoff = datetime.now() - timedelta(minutes=5)
-        with sync_jobs_lock:
-            stale = [jid for jid, j in sync_jobs.items() if j.get('finished_at') and j['finished_at'] < cutoff]
-            for jid in stale:
-                sync_jobs.pop(jid, None)
-
+        r      = row[0]
         job_id = secrets.token_hex(8)
-        with sync_jobs_lock:
-            sync_jobs[job_id] = {
-                'status': 'running',
-                'files_done': 0,
-                'files_total': 0,
-                'records': 0,
-                'error': None,
-                'finished_at': None,
-            }
 
-        t = threading.Thread(
-            target=_run_sync,
-            args=(job_id, user_id, r['s3_bucket'], r.get('s3_prefix') or '',
-                  r.get('aws_region') or 'us-east-1', ak, sk),
-            daemon=True,
+        # Write initial job state to DynamoDB
+        _put_job(job_id, {
+            'status':      'queued',
+            'user_id':     user_id,
+            'files_done':  0,
+            'files_total': 0,
+            'records':     0,
+            'error':       None,
+        })
+
+        # Push message to SQS — sync_worker Lambda will pick it up
+        sqs = boto3.client('sqs', region_name=os.getenv('AWS_REGION', 'ap-south-1'))
+        sqs.send_message(
+            QueueUrl=SYNC_QUEUE_URL,
+            MessageBody=_json.dumps({
+                'job_id':    job_id,
+                'user_id':   user_id,
+                'bucket':    r['s3_bucket'],
+                'prefix':    r.get('s3_prefix') or '',
+                'region':    r.get('aws_region') or 'us-east-1',
+                'ak_enc':    r.get('aws_access_key_encrypted') or '',
+                'sk_enc':    r.get('aws_secret_key_encrypted') or '',
+            }),
         )
-        t.start()
+        logger.info(f"Sync job {job_id} queued for user {user_id}")
         return jsonify({'job_id': job_id}), 202
     except Exception as e:
         logger.error(f"sync_logs error: {e}")
@@ -1162,18 +1159,16 @@ def sync_logs(user_id):
 @app.route('/api/sync/status/<job_id>', methods=['GET'])
 @require_auth
 def sync_status(user_id, job_id):
-    """Poll the status of an async sync job."""
-    job = sync_jobs.get(job_id)
+    """Poll sync job status from DynamoDB."""
+    job = _get_job(job_id)
     if not job:
         return jsonify({'error': 'Job not found'}), 404
-    with sync_jobs_lock:
-        snapshot = dict(job)
     return jsonify({
-        'status':      snapshot['status'],
-        'files_done':  snapshot.get('files_done', 0),
-        'files_total': snapshot.get('files_total', 0),
-        'records':     snapshot.get('records', 0),
-        'error':       snapshot.get('error'),
+        'status':      job.get('status'),
+        'files_done':  int(job.get('files_done',  0)),
+        'files_total': int(job.get('files_total', 0)),
+        'records':     int(job.get('records',     0)),
+        'error':       job.get('error'),
     }), 200
 
 
@@ -1394,33 +1389,9 @@ def auth_reset_password():
 # OAuth signups are auto-verified by the provider.
 
 
+# Mangum adapter — makes Flask work as an AWS Lambda handler
+from mangum import Mangum
+handler = Mangum(app, lifespan='off')
+
 if __name__ == '__main__':
-    # Start auto-sync scheduler in a background daemon thread
-    import schedule
-    import time
-    from scheduler import sync_all_users
-
-    SYNC_TIME = '02:00'
-
-    schedule.every().day.at(SYNC_TIME).do(sync_all_users)
-
-    # Periodically purge stale sync jobs (every 10 minutes)
-    def _cleanup_sync_jobs():
-        cutoff = datetime.now() - timedelta(minutes=5)
-        with sync_jobs_lock:
-            stale = [jid for jid, j in sync_jobs.items() if j.get('finished_at') and j['finished_at'] < cutoff]
-            for jid in stale:
-                sync_jobs.pop(jid, None)
-
-    schedule.every(10).minutes.do(_cleanup_sync_jobs)
-
-    def _run_scheduler():
-        logger.info(f"Auto-sync scheduler started — runs daily at {SYNC_TIME}")
-        while True:
-            schedule.run_pending()
-            time.sleep(60)
-
-    t = threading.Thread(target=_run_scheduler, daemon=True)
-    t.start()
-
     app.run(host='0.0.0.0', debug=True, port=5000, use_reloader=False)

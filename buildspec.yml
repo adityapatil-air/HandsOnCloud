@@ -1,30 +1,61 @@
 version: 0.2
 
+env:
+  parameter-store:
+    FRONTEND_BUCKET: /cloudproof/FRONTEND_BUCKET
+    API_LAMBDA:      /cloudproof/API_LAMBDA
+    SYNC_LAMBDA:     /cloudproof/SYNC_LAMBDA
+    SCHEDULER_LAMBDA: /cloudproof/SCHEDULER_LAMBDA
+    API_GATEWAY_ID:  /cloudproof/API_GATEWAY_ID
+    AWS_REGION_NAME: /cloudproof/AWS_REGION
+
 phases:
   install:
     runtime-versions:
       nodejs: 18
       python: 3.11
     commands:
+      - pip install --upgrade pip
+      - pip install -r backend/requirements.txt -t backend/package/
       - cd frontend && npm install
-      - cd ..
-      - pip3 install --upgrade pip
-      - pip3 install -r backend/requirements.txt
 
   build:
     commands:
-      - cd frontend && npm run build
+      # --- Inject real API Gateway URL into frontend build ---
+      - echo "REACT_APP_API_URL=https://${API_GATEWAY_ID}.execute-api.${AWS_REGION_NAME}.amazonaws.com/prod" > frontend/.env.production
+      # --- Frontend build ---
+      - cd frontend && npm run build && cd ..
+
+      # --- Package Lambda zip (all 3 functions share one zip) ---
+      - cp backend/*.py backend/package/
+      - cd backend/package && zip -r ../../lambda.zip . && cd ../..
 
   post_build:
     commands:
-      - cd ..
-      - chmod +x scripts/*.sh
+      # --- Deploy frontend to S3 ---
+      - aws s3 sync frontend/build/ s3://$FRONTEND_BUCKET/ --delete
+
+      # --- Invalidate CloudFront cache ---
+      - |
+        DIST_ID=$(aws cloudfront list-distributions \
+          --query "DistributionList.Items[?Origins.Items[0].DomainName=='${FRONTEND_BUCKET}.s3.amazonaws.com'].Id" \
+          --output text)
+        if [ -n "$DIST_ID" ]; then
+          aws cloudfront create-invalidation --distribution-id $DIST_ID --paths "/*"
+        fi
+
+      # --- Upload Lambda zip to S3 artifact bucket ---
+      - aws s3 cp lambda.zip s3://$FRONTEND_BUCKET/lambda.zip
+
+      # --- Update all 3 Lambda functions ---
+      - aws lambda update-function-code --function-name $API_LAMBDA      --s3-bucket $FRONTEND_BUCKET --s3-key lambda.zip --region $AWS_REGION_NAME
+      - aws lambda update-function-code --function-name $SYNC_LAMBDA     --s3-bucket $FRONTEND_BUCKET --s3-key lambda.zip --region $AWS_REGION_NAME
+      - aws lambda update-function-code --function-name $SCHEDULER_LAMBDA --s3-bucket $FRONTEND_BUCKET --s3-key lambda.zip --region $AWS_REGION_NAME
+
+      # --- Publish new API Gateway stage ---
+      - aws apigatewayv2 create-deployment --api-id $API_GATEWAY_ID --stage-name prod --region $AWS_REGION_NAME
 
 artifacts:
   files:
-    - frontend/build/**/*
-    - frontend/dist
-    - appspec.yml
-    - scripts/**/*
-    - backend/**/*
-  discard-paths: no
+    - lambda.zip
+  discard-paths: yes

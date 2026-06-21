@@ -1,29 +1,9 @@
 version: 0.0
-os: linux
-file_exists_behavior: OVERWRITE
-
-files:
-  - source: frontend/build
-    destination: /var/www/html
-
-  - source: backend
-    destination: /home/ubuntu/backend
-
-  - source: scripts
-    destination: /home/ubuntu/scripts
-
-hooks:
-  BeforeInstall:
-    - location: scripts/before_install.sh
-      timeout: 300
-      runas: root
-
-  AfterInstall:
-    - location: scripts/after_install.sh
-      timeout: 300
-      runas: root
-
-  ApplicationStart:
-    - location: scripts/start.sh
-      timeout: 300
-      runas: root
+Resources:
+  - ApiLambdaFunction:
+      Type: AWS::Lambda::Function
+      Properties:
+        Name: cloudproof-api
+        Alias: live
+        CurrentVersion: <CURRENT_VERSION>
+        TargetVersion: <TARGET_VERSION>

@@ -1,12 +1,10 @@
 """
 CloudProof Auto-Sync Scheduler
-Runs daily at a fixed time and syncs CloudTrail logs for all users.
-Run this as a separate process: python scheduler.py
+On Lambda: triggered by EventBridge cron(0 2 * * ? *)
+Locally:   python scheduler.py
 """
-import schedule
-import time
-import sys
 import logging
+import sys
 from datetime import datetime
 from database import execute_query
 from ingestion import process_user_s3_logs
@@ -17,10 +15,6 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# ── Config ────────────────────────────────────────────────────────────────────
-SYNC_TIME      = "02:00"   # Run daily at 2:00 AM
-MAX_WORKERS    = 3         # Max users syncing simultaneously
 
 
 def sync_all_users():
@@ -84,25 +78,23 @@ def sync_all_users():
     logger.info(f"=== Auto-sync complete: {success} succeeded, {failed} failed ===")
 
 
-# ── Schedule ──────────────────────────────────────────────────────────────────
-# Only register the schedule when running as a standalone script,
-# NOT when imported by app.py (which registers its own schedule).
-if __name__ == '__main__':
-    schedule.every().day.at(SYNC_TIME).do(sync_all_users)
-
-if __name__ == '__main__':
-    logger.info(f"CloudProof Auto-Sync Scheduler started.")
-    logger.info(f"Scheduled daily at {SYNC_TIME}.")
-    logger.info("Press Ctrl+C to stop.")
-
-    # Run once immediately on startup
-    logger.info("Running initial sync on startup...")
+# ── Lambda entry point (EventBridge trigger) ─────────────────────────────────
+def lambda_handler(event, context):
+    """Called by EventBridge rule: cron(0 2 * * ? *)"""
     sync_all_users()
 
+
+# ── Local entry point ─────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    import schedule
+    import time
+
+    logger.info('CloudProof scheduler started — runs daily at 02:00')
+    sync_all_users()  # run once on startup
+    schedule.every().day.at('02:00').do(sync_all_users)
     try:
         while True:
             schedule.run_pending()
             time.sleep(60)
     except KeyboardInterrupt:
-        logger.info("Scheduler stopped.")
         sys.exit(0)
