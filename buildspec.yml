@@ -12,19 +12,19 @@ env:
 phases:
   install:
     runtime-versions:
-      nodejs: 18
+      nodejs: 20
       python: 3.11
     commands:
       - pip install --upgrade pip
       - pip install -r backend/requirements.txt -t backend/package/
-      - cd frontend && npm install
+      - npm install --prefix frontend
 
   build:
     commands:
       # --- Inject real API Gateway URL into frontend build ---
       - echo "REACT_APP_API_URL=https://${API_GATEWAY_ID}.execute-api.${AWS_REGION_NAME}.amazonaws.com/prod" > frontend/.env.production
       # --- Frontend build ---
-      - cd frontend && npm run build && cd ..
+      - npm run build --prefix frontend
 
       # --- Package Lambda zip (all 3 functions share one zip) ---
       - cp backend/*.py backend/package/
