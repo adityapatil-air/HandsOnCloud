@@ -17,11 +17,15 @@ Parameters:
 
   GitHubRepo:
     Type: String
-    Default: cloudproof
+    Default: HandsOnCloud
 
   GitHubBranch:
     Type: String
-    Default: main
+    Default: lambda-deploy
+
+  GitHubConnectionArn:
+    Type: String
+    Description: ARN of the CodeStar GitHub V2 connection
 
 Resources:
 
@@ -155,10 +159,10 @@ Resources:
                 Action: [sts:GetCallerIdentity, cloudtrail:LookupEvents]
                 Resource: "*"
               - Effect: Allow
-                Action: [ssm:GetParameter, secretsmanager:GetSecretValue]
-                Resource: "*"
+                Action: [secretsmanager:GetSecretValue]
+                Resource: !Ref SupabaseSecret
 
-# Lambda Functions (no VPC - Supabase is public internet)
+# Lambda Functions
   ApiLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -175,6 +179,10 @@ Resources:
       Environment:
         Variables:
           DB_ENGINE: postgres
+          DB_HOST: aws-1-ap-northeast-2.pooler.supabase.com
+          DB_PORT: "5432"
+          DB_NAME: postgres
+          DB_USER: postgres.remnvnsgrskctlqcyiws
           DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           FRONTEND_URL: !Sub https://${CloudFrontDistribution.DomainName}
@@ -198,6 +206,10 @@ Resources:
       Environment:
         Variables:
           DB_ENGINE: postgres
+          DB_HOST: aws-1-ap-northeast-2.pooler.supabase.com
+          DB_PORT: "5432"
+          DB_NAME: postgres
+          DB_USER: postgres.remnvnsgrskctlqcyiws
           DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           SYNC_JOBS_TABLE: cloudproof-sync-jobs
@@ -219,6 +231,10 @@ Resources:
       Environment:
         Variables:
           DB_ENGINE: postgres
+          DB_HOST: aws-1-ap-northeast-2.pooler.supabase.com
+          DB_PORT: "5432"
+          DB_NAME: postgres
+          DB_USER: postgres.remnvnsgrskctlqcyiws
           DB_SECRET_NAME: cloudproof/supabase
           SECRET_KEY: !Ref SecretKey
           AWS_REGION_NAME: ap-south-1
@@ -296,41 +312,6 @@ Resources:
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*
 
 # SSM Params for buildspec
-  SecretKeyParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /cloudproof/SECRET_KEY
-      Type: String
-      Value: !Ref SecretKey
-
-  DBHostParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /cloudproof/DB_HOST
-      Type: String
-      Value: db.remnvnsgrskctlqcyiws.supabase.co
-
-  DBPortParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /cloudproof/DB_PORT
-      Type: String
-      Value: "5432"
-
-  DBNameParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /cloudproof/DB_NAME
-      Type: String
-      Value: postgres
-
-  DBUserParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /cloudproof/DB_USER
-      Type: String
-      Value: postgres
-
   FrontendBucketParam:
     Type: AWS::SSM::Parameter
     Properties:
@@ -416,16 +397,16 @@ Resources:
             - Name: GitHubSource
               ActionTypeId:
                 Category: Source
-                Owner: ThirdParty
-                Provider: GitHub
+                Owner: AWS
+                Provider: CodeStarSourceConnection
                 Version: 1
               OutputArtifacts:
                 - Name: SourceOutput
               Configuration:
-                Owner: !Ref GitHubOwner
-                Repo: !Ref GitHubRepo
-                Branch: !Ref GitHubBranch
-                OAuthToken: '{{resolve:ssm:/cloudproof/github-token}}'
+                ConnectionArn: !Ref GitHubConnectionArn
+                FullRepositoryId: !Sub ${GitHubOwner}/${GitHubRepo}
+                BranchName: !Ref GitHubBranch
+                OutputArtifactFormat: CODE_ZIP
         - Name: Build
           Actions:
             - Name: BuildAndDeploy
