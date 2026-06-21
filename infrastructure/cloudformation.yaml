@@ -382,6 +382,13 @@ Resources:
 
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
+    DependsOn:
+      - FrontendBucketParam
+      - ApiLambdaParam
+      - SyncLambdaParam
+      - SchedulerLambdaParam
+      - ApiGatewayIdParam
+      - AwsRegionParam
     Properties:
       RoleArn: !GetAtt PipelineRole.Arn
       ArtifactStore:
