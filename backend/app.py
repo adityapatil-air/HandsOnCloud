@@ -41,6 +41,11 @@ CORS(app,
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 )
 
+@app.after_request
+def set_coop_header(response):
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin-allow-popups'
+    return response
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Resource not found'}), 404
@@ -954,16 +959,21 @@ def auth_firebase():
     Body: { id_token, username?, name? }
     """
     try:
+        print("[DEBUG] /api/auth/firebase called", flush=True)
         data = request.json or {}
         id_token = data.get('id_token')
         if not id_token:
             return jsonify({'error': 'id_token is required.'}), 400
 
         try:
+            print(f"[DEBUG] Verifying Firebase token (first 20 chars): {id_token[:20]}", flush=True)
             decoded = verify_firebase_token(id_token)
+            print(f"[DEBUG] Token verified OK, uid={decoded.get('uid')}", flush=True)
         except Exception as e:
-            logger.warning(f"Firebase token verification failed: {e}")
-            return jsonify({'error': 'Invalid or expired sign-in token. Please sign in again.'}), 401
+            import traceback
+            print(f"[DEBUG] Firebase FAILED: {e}", flush=True)
+            print(traceback.format_exc(), flush=True)
+            return jsonify({'error': f'Token verification failed: {str(e)}'}), 401
 
         uid            = decoded.get('uid')
         email          = (decoded.get('email') or '').strip().lower()

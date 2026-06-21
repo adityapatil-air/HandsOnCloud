@@ -18,6 +18,9 @@ import threading
 
 import firebase_admin
 from firebase_admin import credentials, auth as fb_auth
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +43,17 @@ def _ensure_initialized():
         inline = os.getenv('FIREBASE_SERVICE_ACCOUNT_JSON')
         path   = os.getenv('FIREBASE_SERVICE_ACCOUNT')
 
+        # Resolve relative path against the directory this file lives in
+        if path and not os.path.isabs(path):
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+
         if inline:
             cred = credentials.Certificate(json.loads(inline))
         elif path and os.path.exists(path):
             cred = credentials.Certificate(path)
+            logger.info(f'Firebase: using service account at {path}')
         else:
-            # Falls back to GOOGLE_APPLICATION_CREDENTIALS / ADC if available.
+            logger.warning(f'Firebase: no service account found at {path!r}, falling back to ADC')
             cred = None
 
         if cred is not None:
