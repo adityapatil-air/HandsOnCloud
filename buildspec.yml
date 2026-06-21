@@ -16,6 +16,7 @@ phases:
       python: 3.11
     commands:
       - pip install --upgrade pip
+      - rm -rf backend/package && mkdir backend/package
       - "pip install -r backend/requirements.txt -t backend/package/ --platform manylinux2014_x86_64 --only-binary=:all: --python-version 3.11"
       - npm install --prefix frontend
 
