@@ -20,7 +20,11 @@ ROLE=$(aws lambda get-function-configuration --function-name cloudproof-api --re
 
 echo "Creating migration Lambda..."
 
-# Write migration handler inline
+# Download the full lambda.zip (has psycopg2 + all deps) from S3
+BUCKET=$(aws ssm get-parameter --name /cloudproof/FRONTEND_BUCKET --region $REGION --query Parameter.Value --output text)
+aws s3 cp s3://$BUCKET/lambda.zip /tmp/lambda.zip
+
+# Write migration handler and add it into the existing zip
 cat > /tmp/migrate.py << 'PYEOF'
 import psycopg2, os
 
@@ -76,22 +80,26 @@ def handler(event, context):
     return {"status": "Schema applied successfully"}
 PYEOF
 
-cd /tmp && zip migrate.zip migrate.py
+# Add migrate.py into the full zip that already has psycopg2
+cd /tmp && zip lambda.zip migrate.py
 
-# Create Lambda
+# Upload updated zip
+aws s3 cp /tmp/lambda.zip s3://$BUCKET/migrate.zip
+
+# Create Lambda using the full zip from S3
 aws lambda create-function \
   --function-name cloudproof-migrate \
   --runtime python3.11 \
   --handler migrate.handler \
   --role $ROLE \
-  --zip-file fileb:///tmp/migrate.zip \
+  --code S3Bucket=$BUCKET,S3Key=migrate.zip \
   --timeout 60 \
   --vpc-config SubnetIds=$SUBNET,SecurityGroupIds=$SG \
   --environment "Variables={DB_HOST=$DB_HOST,DB_USER=$DB_USER,DB_PASSWORD=$DB_PASS}" \
   --region $REGION 2>/dev/null || \
 aws lambda update-function-code \
   --function-name cloudproof-migrate \
-  --zip-file fileb:///tmp/migrate.zip \
+  --s3-bucket $BUCKET --s3-key migrate.zip \
   --region $REGION
 
 echo "Waiting for Lambda to be ready..."
