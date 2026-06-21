@@ -23,10 +23,6 @@ Parameters:
     Type: String
     Default: lambda-deploy
 
-  GitHubConnectionArn:
-    Type: String
-    Description: ARN of the CodeStar GitHub V2 connection
-
 Resources:
 
 # Supabase credentials in Secrets Manager
@@ -397,16 +393,16 @@ Resources:
             - Name: GitHubSource
               ActionTypeId:
                 Category: Source
-                Owner: AWS
-                Provider: CodeStarSourceConnection
+                Owner: ThirdParty
+                Provider: GitHub
                 Version: 1
               OutputArtifacts:
                 - Name: SourceOutput
               Configuration:
-                ConnectionArn: !Ref GitHubConnectionArn
-                FullRepositoryId: !Sub ${GitHubOwner}/${GitHubRepo}
-                BranchName: !Ref GitHubBranch
-                OutputArtifactFormat: CODE_ZIP
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: '{{resolve:ssm:/cloudproof/github-token}}'
         - Name: Build
           Actions:
             - Name: BuildAndDeploy
