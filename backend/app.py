@@ -1405,6 +1405,10 @@ def handler(event, context):
     http = ctx.get('http', {})
     method = http.get('method', 'GET')
     path = event.get('rawPath', '/')
+    # Strip stage prefix if present (e.g. /prod/api/health -> /api/health)
+    stage = ctx.get('stage', '')
+    if stage and path.startswith('/' + stage):
+        path = path[len('/' + stage):] or '/'
     query = event.get('rawQueryString', '')
     headers = event.get('headers', {}) or {}
 
