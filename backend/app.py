@@ -1389,9 +1389,66 @@ def auth_reset_password():
 # OAuth signups are auto-verified by the provider.
 
 
-# Mangum adapter — makes Flask work as an AWS Lambda handler
-from mangum import Mangum
-handler = Mangum(app)
+# Lambda WSGI handler — no mangum needed
+import io, json
+
+def handler(event, context):
+    # Build WSGI environ from API Gateway v2 event
+    body = event.get('body', '') or ''
+    if event.get('isBase64Encoded'):
+        import base64
+        body = base64.b64decode(body)
+    else:
+        body = body.encode('utf-8')
+
+    ctx = event.get('requestContext', {})
+    http = ctx.get('http', {})
+    method = http.get('method', 'GET')
+    path = event.get('rawPath', '/')
+    query = event.get('rawQueryString', '')
+    headers = event.get('headers', {}) or {}
+
+    environ = {
+        'REQUEST_METHOD':    method,
+        'PATH_INFO':         path,
+        'QUERY_STRING':      query,
+        'CONTENT_LENGTH':    str(len(body)),
+        'CONTENT_TYPE':      headers.get('content-type', ''),
+        'SERVER_NAME':       'lambda',
+        'SERVER_PORT':       '443',
+        'wsgi.input':        io.BytesIO(body),
+        'wsgi.errors':       io.StringIO(),
+        'wsgi.url_scheme':   'https',
+        'wsgi.multithread':  False,
+        'wsgi.multiprocess': False,
+        'wsgi.run_once':     False,
+    }
+    for k, v in headers.items():
+        key = 'HTTP_' + k.upper().replace('-', '_')
+        environ[key] = v
+    if 'content-type' in headers:
+        environ['CONTENT_TYPE'] = headers['content-type']
+
+    response = {'status': '200 OK', 'headers': [], 'body': []}
+
+    def start_response(status, response_headers, exc_info=None):
+        response['status'] = status
+        response['headers'] = response_headers
+
+    result = app(environ, start_response)
+    for data in result:
+        response['body'].append(data)
+
+    status_code = int(response['status'].split(' ', 1)[0])
+    resp_headers = {k: v for k, v in response['headers']}
+    body_bytes = b''.join(response['body'])
+
+    return {
+        'statusCode': status_code,
+        'headers': resp_headers,
+        'body': body_bytes.decode('utf-8'),
+        'isBase64Encoded': False,
+    }
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True, port=5000, use_reloader=False)
