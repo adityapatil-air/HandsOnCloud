@@ -1,15 +1,15 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CloudProof Serverless Infra - Lambda + API Gateway + RDS + SQS + DynamoDB + S3/CloudFront
+Description: CloudProof Serverless Infra - Lambda + API Gateway + SQS + DynamoDB + S3/CloudFront + Supabase
 
 Parameters:
-  DBPassword:
-    Type: String
-    NoEcho: true
-
   SecretKey:
     Type: String
     NoEcho: true
     Default: "cloudproof-secret-key-change-this"
+
+  DBPassword:
+    Type: String
+    NoEcho: true
 
   GitHubOwner:
     Type: String
@@ -24,172 +24,6 @@ Parameters:
     Default: main
 
 Resources:
-
-# VPC
-  MyVPC:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: 10.0.0.0/16
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-
-  PrivateSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref MyVPC
-      CidrBlock: 10.0.3.0/24
-      AvailabilityZone: ap-south-1a
-
-  PrivateSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref MyVPC
-      CidrBlock: 10.0.4.0/24
-      AvailabilityZone: ap-south-1b
-
-  PublicSubnet1:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref MyVPC
-      CidrBlock: 10.0.1.0/24
-      AvailabilityZone: ap-south-1a
-      MapPublicIpOnLaunch: true
-
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-
-  AttachIGW:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref MyVPC
-      InternetGatewayId: !Ref InternetGateway
-
-  NatEIP:
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-
-  NatGateway:
-    Type: AWS::EC2::NatGateway
-    Properties:
-      AllocationId: !GetAtt NatEIP.AllocationId
-      SubnetId: !Ref PublicSubnet1
-
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref MyVPC
-
-  PublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: AttachIGW
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  PublicSubnet1Assoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet1
-      RouteTableId: !Ref PublicRouteTable
-
-  PrivateRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref MyVPC
-
-  PrivateRoute:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
-
-  PrivateSubnet1Assoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateSubnet1
-      RouteTableId: !Ref PrivateRouteTable
-
-  PrivateSubnet2Assoc:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateSubnet2
-      RouteTableId: !Ref PrivateRouteTable
-
-# Security Groups
-  LambdaSG:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Lambda outbound only
-      VpcId: !Ref MyVPC
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-
-  RDSSG:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allow Postgres from Lambda
-      VpcId: !Ref MyVPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          SourceSecurityGroupId: !Ref LambdaSG
-
-# Secrets / SSM
-  DBSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: cloudproof-db-secret
-      SecretString: !Sub |
-        {
-          "username": "postgres",
-          "password": "${DBPassword}",
-          "dbname": "cloudproof"
-        }
-
-  SecretKeyParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /cloudproof/SECRET_KEY
-      Type: String
-      Value: !Ref SecretKey
-
-# RDS
-  DBSubnetGroup:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupDescription: DB subnets
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-
-  MyDB:
-    Type: AWS::RDS::DBInstance
-    DependsOn: DBSecret
-    DeletionPolicy: Retain
-    Properties:
-      Engine: postgres
-      EngineVersion: "15"
-      DBInstanceClass: db.t3.micro
-      AllocatedStorage: 20
-      DBName: cloudproof
-      MasterUsername: "{{resolve:secretsmanager:cloudproof-db-secret:SecretString:username}}"
-      MasterUserPassword: "{{resolve:secretsmanager:cloudproof-db-secret:SecretString:password}}"
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      VPCSecurityGroups:
-        - !Ref RDSSG
-      PubliclyAccessible: false
-
-  DBHostParam:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /cloudproof/DB_HOST
-      Type: String
-      Value: !GetAtt MyDB.Endpoint.Address
 
 # DynamoDB - sync job status
   SyncJobsTable:
@@ -295,17 +129,11 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
         - PolicyName: CloudProofLambdaPolicy
           PolicyDocument:
             Statement:
-              - Effect: Allow
-                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
-                Resource: arn:aws:logs:*:*:*
-              - Effect: Allow
-                Action: [secretsmanager:GetSecretValue, ssm:GetParameter]
-                Resource: "*"
               - Effect: Allow
                 Action: [sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
                 Resource: !GetAtt SyncQueue.Arn
@@ -318,8 +146,11 @@ Resources:
               - Effect: Allow
                 Action: [sts:GetCallerIdentity, cloudtrail:LookupEvents]
                 Resource: "*"
+              - Effect: Allow
+                Action: [ssm:GetParameter, secretsmanager:GetSecretValue]
+                Resource: "*"
 
-# Lambda Functions
+# Lambda Functions (no VPC - Supabase is public internet)
   ApiLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -333,15 +164,12 @@ Resources:
         ZipFile: |
           def handler(event, context):
               return {"statusCode": 200, "body": "placeholder - deploy via pipeline"}
-      VpcConfig:
-        SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
-        SecurityGroupIds: [!Ref LambdaSG]
       Environment:
         Variables:
           DB_ENGINE: postgres
-          DB_HOST: !GetAtt MyDB.Endpoint.Address
+          DB_HOST: db.remnvnsgrskctlqcyiws.supabase.co
           DB_PORT: "5432"
-          DB_NAME: cloudproof
+          DB_NAME: postgres
           DB_USER: postgres
           DB_PASSWORD: !Ref DBPassword
           SECRET_KEY: !Ref SecretKey
@@ -363,15 +191,12 @@ Resources:
         ZipFile: |
           def lambda_handler(event, context):
               return {"statusCode": 200, "body": "placeholder - deploy via pipeline"}
-      VpcConfig:
-        SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
-        SecurityGroupIds: [!Ref LambdaSG]
       Environment:
         Variables:
           DB_ENGINE: postgres
-          DB_HOST: !GetAtt MyDB.Endpoint.Address
+          DB_HOST: db.remnvnsgrskctlqcyiws.supabase.co
           DB_PORT: "5432"
-          DB_NAME: cloudproof
+          DB_NAME: postgres
           DB_USER: postgres
           DB_PASSWORD: !Ref DBPassword
           SECRET_KEY: !Ref SecretKey
@@ -391,15 +216,12 @@ Resources:
         ZipFile: |
           def lambda_handler(event, context):
               return {"statusCode": 200, "body": "placeholder - deploy via pipeline"}
-      VpcConfig:
-        SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
-        SecurityGroupIds: [!Ref LambdaSG]
       Environment:
         Variables:
           DB_ENGINE: postgres
-          DB_HOST: !GetAtt MyDB.Endpoint.Address
+          DB_HOST: db.remnvnsgrskctlqcyiws.supabase.co
           DB_PORT: "5432"
-          DB_NAME: cloudproof
+          DB_NAME: postgres
           DB_USER: postgres
           DB_PASSWORD: !Ref DBPassword
           SECRET_KEY: !Ref SecretKey
@@ -478,6 +300,13 @@ Resources:
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*
 
 # SSM Params for buildspec
+  SecretKeyParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cloudproof/SECRET_KEY
+      Type: String
+      Value: !Ref SecretKey
+
   FrontendBucketParam:
     Type: AWS::SSM::Parameter
     Properties:
@@ -594,9 +423,6 @@ Outputs:
 
   CloudFrontURL:
     Value: !Sub https://${CloudFrontDistribution.DomainName}
-
-  RDSEndpoint:
-    Value: !GetAtt MyDB.Endpoint.Address
 
   SyncQueueURL:
     Value: !Ref SyncQueue

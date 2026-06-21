@@ -129,8 +129,8 @@ def _get_postgres_connection(retries=3):
         with _pg_pool_lock:
             if _pg_pool is None:
                 _pg_pool = psycopg2.pool.ThreadedConnectionPool(
-                    minconn=2,
-                    maxconn=20,
+                    minconn=1,
+                    maxconn=5,
                     host=os.getenv("DB_HOST", "localhost"),
                     port=os.getenv("DB_PORT", "5432"),
                     database=os.getenv("DB_NAME", "cloudproof"),
