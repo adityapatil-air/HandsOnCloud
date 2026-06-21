@@ -2,6 +2,7 @@ import os
 import sqlite3
 import time
 import threading
+import boto3
 
 import psycopg2
 import psycopg2.pool
