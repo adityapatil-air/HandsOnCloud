@@ -1,4 +1,4 @@
-# ☁️ CloudProof
+# ☁️ HandsOnCloud
 
 **Verify Your AWS Hands-On Experience**
 
